@@ -240,6 +240,8 @@ def rag_search(state: AllergyGraphState) -> AllergyGraphState:
 # ==============================================================================
 # === 💥 [교체된 노드 5] (Zero-Shot NLI 파이프라인 버전) 💥 ===
 # ==============================================================================
+import csv # << 파일 상단에 이 import 구문이 없다면 추가해주세요.
+
 def llm_fallback(state: AllergyGraphState) -> AllergyGraphState:
     """
     ✅ 노드 5 (LLM Fallback 노드) - [NLI Zero-Shot 버전]
@@ -265,12 +267,26 @@ def llm_fallback(state: AllergyGraphState) -> AllergyGraphState:
         if top_label in ALLERGENS_STD_SET: 
             # 해당 점수가 우리가 설정한 NLI 임계값(예: 0.5)보다 높은지 확인
             if top_score >= NLI_FALLBACK_THRESHOLD:
-                 print(f"  -> 유효한 분류: '{top_label}' (Score: {top_score}, 임계값 {NLI_FALLBACK_THRESHOLD} 통과).")
-                 return {**state, "rag_result": {"confidence": top_score, "found_allergen": top_label}}
+                print(f"  -> 유효한 분류: '{top_label}' (Score: {top_score}, 임계값 {NLI_FALLBACK_THRESHOLD} 통과).")
+                
+                # <<< 추가된 부분 시작 >>>
+                # 기존 로직에 영향을 주지 않고, 성공한 분류 결과만 CSV 파일에 추가합니다.
+                try:
+                    csv_path = 'domestic_allergy_rag_knowledge_1000.csv'
+                    with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f)
+                        new_row = [ingredient, top_label, f'{ingredient}은(는) {top_label}에 해당하는 성분입니다.']
+                        writer.writerow(new_row)
+                    print(f"  -> 📚 지식 업데이트: '{ingredient}' -> '{top_label}' 관계를 CSV에 추가했습니다.")
+                except Exception as e:
+                    print(f"  -> ⚠️ CSV 파일 쓰기 오류: {e}")
+                # <<< 추가된 부분 끝 >>>
+
+                return {**state, "rag_result": {"confidence": top_score, "found_allergen": top_label}}
             else:
-                 # 알레르기이긴 하지만, 점수가 너무 낮아서 신뢰할 수 없음
-                 print(f"  -> 점수가 낮음 ({top_score} < {NLI_FALLBACK_THRESHOLD}). '없음'으로 처리.")
-                 return {**state, "rag_result": {"confidence": 1.0, "found_allergen": "없음"}}
+                # 알레르기이긴 하지만, 점수가 너무 낮아서 신뢰할 수 없음
+                print(f"  -> 점수가 낮음 ({top_score} < {NLI_FALLBACK_THRESHOLD}). '없음'으로 처리.")
+                return {**state, "rag_result": {"confidence": 1.0, "found_allergen": "없음"}}
         else:
             # 최고 점수 레이블이 "관련 없음"이거나, (혹시 모를) 다른 쓰레기 값인 경우
             print(f"  -> 최고 점수 레이블이 '{top_label}'이므로 '없음'으로 처리.")
