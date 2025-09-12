@@ -240,8 +240,6 @@ def rag_search(state: AllergyGraphState) -> AllergyGraphState:
 # ==============================================================================
 # === 💥 [교체된 노드 5] (Zero-Shot NLI 파이프라인 버전) 💥 ===
 # ==============================================================================
-import csv # << 파일 상단에 이 import 구문이 없다면 추가해주세요.
-
 def llm_fallback(state: AllergyGraphState) -> AllergyGraphState:
     """
     ✅ 노드 5 (LLM Fallback 노드) - [NLI Zero-Shot 버전]
@@ -267,26 +265,12 @@ def llm_fallback(state: AllergyGraphState) -> AllergyGraphState:
         if top_label in ALLERGENS_STD_SET: 
             # 해당 점수가 우리가 설정한 NLI 임계값(예: 0.5)보다 높은지 확인
             if top_score >= NLI_FALLBACK_THRESHOLD:
-                print(f"  -> 유효한 분류: '{top_label}' (Score: {top_score}, 임계값 {NLI_FALLBACK_THRESHOLD} 통과).")
-                
-                # <<< 추가된 부분 시작 >>>
-                # 기존 로직에 영향을 주지 않고, 성공한 분류 결과만 CSV 파일에 추가합니다.
-                try:
-                    csv_path = 'domestic_allergy_rag_knowledge_1000.csv'
-                    with open(csv_path, 'a', newline='', encoding='utf-8') as f:
-                        writer = csv.writer(f)
-                        new_row = [ingredient, top_label, f'{ingredient}은(는) {top_label}에 해당하는 성분입니다.']
-                        writer.writerow(new_row)
-                    print(f"  -> 📚 지식 업데이트: '{ingredient}' -> '{top_label}' 관계를 CSV에 추가했습니다.")
-                except Exception as e:
-                    print(f"  -> ⚠️ CSV 파일 쓰기 오류: {e}")
-                # <<< 추가된 부분 끝 >>>
-
-                return {**state, "rag_result": {"confidence": top_score, "found_allergen": top_label}}
+                 print(f"  -> 유효한 분류: '{top_label}' (Score: {top_score}, 임계값 {NLI_FALLBACK_THRESHOLD} 통과).")
+                 return {**state, "rag_result": {"confidence": top_score, "found_allergen": top_label}}
             else:
-                # 알레르기이긴 하지만, 점수가 너무 낮아서 신뢰할 수 없음
-                print(f"  -> 점수가 낮음 ({top_score} < {NLI_FALLBACK_THRESHOLD}). '없음'으로 처리.")
-                return {**state, "rag_result": {"confidence": 1.0, "found_allergen": "없음"}}
+                 # 알레르기이긴 하지만, 점수가 너무 낮아서 신뢰할 수 없음
+                 print(f"  -> 점수가 낮음 ({top_score} < {NLI_FALLBACK_THRESHOLD}). '없음'으로 처리.")
+                 return {**state, "rag_result": {"confidence": 1.0, "found_allergen": "없음"}}
         else:
             # 최고 점수 레이블이 "관련 없음"이거나, (혹시 모를) 다른 쓰레기 값인 경우
             print(f"  -> 최고 점수 레이블이 '{top_label}'이므로 '없음'으로 처리.")
@@ -295,9 +279,104 @@ def llm_fallback(state: AllergyGraphState) -> AllergyGraphState:
     except Exception as e:
         print(f"❌ NLI Fallback 중 오류: {e}")
         return {**state, "rag_result": {"confidence": 1.0, "found_allergen": "오류"}}
+    
 # ==============================================================================
-# === [교체된 노드 5] 끝 ===
+# === 💥 [새로 추가된 노드 5b] (웹 검색 및 지식 베이스 확장) 💥 ===
 # ==============================================================================
+from googleapiclient.discovery import build
+def search_and_update_kb(state: AllergyGraphState) -> AllergyGraphState:
+    """
+    ✅ 노드 5b: [신규 알레르기 탐지] 검색 엔진을 활용해 신규 성분을 기존 카테고리로 분류하고 KB를 확장합니다. (LLM 미사용)
+    """
+    print(f"\n--- (Node 5b: find_new_allergens_and_update_kb) [New Allergen Detection] ---")
+    ingredient = state['current_ingredient']
+    RAG_KNOWLEDGE_BASE_CSV = "domestic_allergy_rag_knowledge_1000.csv"
+    
+    # ⬇️⬇️⬇️ [중요] 여기에 직접 발급받으신 API 키와 검색 엔진 ID를 입력하세요! ⬇️⬇️⬇️
+    API_KEY = ""
+    SEARCH_ENGINE_ID = ""
+
+    print(f"'{ingredient}' 성분의 상위 카테고리 분류를 시작합니다.")
+
+    # ✨ [개선 1] KB에서 기존 카테고리 목록을 미리 불러옵니다.
+    try:
+        df = pd.read_csv(RAG_KNOWLEDGE_BASE_CSV)
+        if ingredient in df['term'].values:
+            print(f"  -> '{ingredient}'은(는) 이미 지식 베이스에 존재합니다. 탐지를 건너뜁니다.")
+            return state
+        
+        # 중복을 제거한 전체 카테고리 목록 확보
+        existing_categories = df['category'].unique().tolist()
+
+    except FileNotFoundError:
+        print(f"  -> 지식 베이스 파일 '{RAG_KNOWLEDGE_BASE_CSV}'을(를) 찾을 수 없어, 분류를 진행할 수 없습니다.")
+        return state
+
+    # ✨ [개선 2] LLM 대신, 각 카테고리와 조합하여 연관성을 검색합니다.
+    found_category = None
+    service = build("customsearch", "v1", developerKey=API_KEY)
+
+    for category in existing_categories:
+        try:
+            # 좀 더 정확한 연관성을 찾기 위해 '원료', '유래' 등의 키워드를 함께 검색
+            search_query = f"'{ingredient}' '{category}' 원료 유래"
+            print(f"  -> '{category}' 카테고리와의 연관성을 검색합니다... (쿼리: {search_query})")
+            
+            response = service.cse().list(q=search_query, cx=SEARCH_ENGINE_ID, num=1).execute()
+            
+            # 검색 결과가 하나라도 있으면 해당 카테고리와 관련이 있다고 판단
+            if response.get('items'):
+                print(f"  -> 분석 결과: '{ingredient}'은(는) '{category}' 카테고리와 연관성이 높습니다.")
+                found_category = category
+                break # 가장 먼저 찾아낸 카테고리로 확정하고 루프 종료
+        
+        except Exception as e:
+            print(f"  -> 검색 중 오류 발생 (카테고리: {category}): {e}")
+            continue # 특정 카테고리 검색에 실패해도 다음 카테고리로 계속 진행
+
+    # ✨ [개선 3] 찾아낸 카테고리가 있을 경우에만 KB를 업데이트합니다.
+    if found_category:
+        description = f"{ingredient}은(는) {found_category}에 해당하는 성분입니다."
+        
+        try:
+            new_entry_df = pd.DataFrame([{
+                "term": ingredient,
+                "category": found_category,
+                "description": description
+            }])
+            new_entry_df.to_csv(RAG_KNOWLEDGE_BASE_CSV, mode='a', header=False, index=False, encoding='utf-8-sig')
+            print(f"✅ 지식 베이스 '{RAG_KNOWLEDGE_BASE_CSV}'에 '{ingredient}' -> '{found_category}' 정보 추가 완료!")
+        except Exception as e:
+            print(f"❌ CSV 파일에 쓰는 중 오류 발생: {e}")
+    else:
+        print(f"  -> 분석 결과: '{ingredient}'을(를) 기존 카테고리로 분류하지 못했습니다.")
+        
+    return state
+
+
+# --- 4. LangGraph 엣지(Edge) 함수 정의 ---
+
+# (기존 route_rag_result 함수는 그대로 둡니다)
+
+# ==============================================================================
+# === 💥 [새로 추가된 조건부 엣지] (Fallback 라우터) 💥 ===
+# ==============================================================================
+def route_fallback_result(state: AllergyGraphState) -> str:
+    """(조건부 엣지 3: Fallback 라우터)
+    NLI Fallback의 결과에 따라 분기합니다.
+    - 결과가 유효한 알레르기인 경우: 'update_final_list'로 이동하여 최종 목록에 추가
+    - 결과가 '없음' 또는 '오류'인 경우: 'search_and_update_kb'로 이동하여 웹 검색 시도
+    """
+    print(f"--- (Edge: route_fallback_result?) ---")
+    fallback_allergen = state['rag_result']['found_allergen']
+    
+    if fallback_allergen in ALLERGENS_STD_SET:
+        print(f"  -> [Fallback 성공]. 'update_final_list'로 이동.")
+        return "allergen_found"
+    else: # '없음', '오류' 등의 경우
+        print(f"  -> [Fallback 결과 불확실]. 'search_and_update_kb'로 이동하여 웹 검색.")
+        return "perform_web_search"
+
 
 
 def update_final_list(state: AllergyGraphState) -> AllergyGraphState:
@@ -364,47 +443,62 @@ print("\n--- LangGraph 워크플로우 빌드 시작 ---")
 
 workflow = StateGraph(AllergyGraphState)
 
-# 1. 모든 노드를 그래프에 추가
+# --- 5. 그래프 빌드 및 컴파일 (정리된 최종 버전) ---
+
+print("\n--- LangGraph 워크플로우 빌드 시작 ---")
+
+workflow = StateGraph(AllergyGraphState)
+
+# 1. 모든 노드를 그래프에 먼저 추가합니다.
 workflow.add_node("call_gcp_vision_api", call_gcp_vision_api)
 workflow.add_node("parse_text_from_raw", parse_text_from_raw)
 workflow.add_node("prepare_next_ingredient", prepare_next_ingredient)
 workflow.add_node("rag_search", rag_search)
-workflow.add_node("llm_fallback", llm_fallback) # <--- NLI 버전 함수가 등록됨
-workflow.add_node("update_final_list", update_final_list)
+workflow.add_node("llm_fallback", llm_fallback)
+workflow.add_node("search_and_update_kb", search_and_update_kb)
+workflow.add_node("update_final_list", update_final_list) 
 workflow.add_node("finalize_processing", finalize_processing)
 
-# 2. 엣지 연결 (흐름 정의)
-workflow.set_entry_point("call_gcp_vision_api")                
-workflow.add_edge("call_gcp_vision_api", "parse_text_from_raw")    
-workflow.add_edge("parse_text_from_raw", "prepare_next_ingredient") 
-workflow.add_edge("prepare_next_ingredient", "rag_search")          
+# 2. 진입점(Entry Point)을 설정합니다.
+workflow.set_entry_point("call_gcp_vision_api")
 
-# 3. RAG 라우팅 (조건부 엣지 1)
+# 3. 각 노드 간의 엣지(흐름)를 연결합니다.
+workflow.add_edge("call_gcp_vision_api", "parse_text_from_raw")
+workflow.add_edge("parse_text_from_raw", "prepare_next_ingredient")
+workflow.add_edge("prepare_next_ingredient", "rag_search")
+
+# 4. RAG 검색 결과에 따른 조건부 분기를 연결합니다.
 workflow.add_conditional_edges(
     "rag_search",
     route_rag_result,
     {"rag_success": "update_final_list", "needs_llm_fallback": "llm_fallback"}
 )
 
-# 4. Fallback 결과도 취합 노드로 연결 (NLI Fallback이 연결됨)
-workflow.add_edge("llm_fallback", "update_final_list") 
+# 5. LLM Fallback 결과에 따른 조건부 분기를 연결합니다.
+workflow.add_conditional_edges(
+    "llm_fallback",
+    route_fallback_result,
+    {"allergen_found": "update_final_list", "perform_web_search": "search_and_update_kb"}
+)
 
-# 5. 메인 루프 (조건부 엣지 2)
+# 6. 웹 검색 노드 결과를 다시 취합 노드로 연결합니다.
+workflow.add_edge("search_and_update_kb", "update_final_list")
+
+# 7. 메인 루프를 위한 조건부 분기를 연결합니다. (모든 재료를 다 검사했는지 확인)
 workflow.add_conditional_edges(
     "update_final_list",
     check_remaining_ingredients,
     {"has_more_ingredients": "prepare_next_ingredient", "all_ingredients_done": "finalize_processing"}
 )
 
-# 6. 종료 노드 연결
+# 8. 최종 노드를 그래프의 끝(END)과 연결합니다.
 workflow.add_edge("finalize_processing", END)
 
-# 7. 컴파일
+# 9. 그래프를 최종 컴파일합니다.
 app = workflow.compile()
 print("--- ✅ LangGraph 워크플로우 컴파일 완료 ---")
 
-
-# --- 6. 테스트 실행 ---
+# --- 9. 테스트 실행 ---
 print("\n\n--- [Test Run: GCP API + Regex 파서 + NLI Fallback 기반 실행] ---")
 
 # (테스트할 이미지 파일을 지정해야 합니다)
