@@ -5,7 +5,7 @@ import io, re, json, html, tempfile, ast, traceback
 from contextlib import redirect_stdout
 from PIL import Image, ImageOps
 import gradio as gr
-import baseline_V2
+import baseline_V3
 
 # ===============================
 # 설정: 표준 알레르겐 (UI 분류에 사용)
@@ -178,7 +178,7 @@ def analyze_image(img: Image.Image, do_mirror: bool, auto_mirror: bool):
                 img.convert("RGB").save(tmp1.name, "JPEG")
                 path1 = tmp1.name
             with redirect_stdout(sio1):
-                state1 = baseline_V2.app.invoke({"image_path": path1}, {"recursion_limit": 2000})
+                state1 = baseline_V3.app.invoke({"image_path": path1}, {"recursion_limit": 2000})
             logs1 = sio1.getvalue().strip()
             fj1 = state1.get("final_output_json", "[]")
             fa1 = safe_load_allergen_list(fj1)
@@ -192,7 +192,7 @@ def analyze_image(img: Image.Image, do_mirror: bool, auto_mirror: bool):
                 img_m.convert("RGB").save(tmp2.name, "JPEG")
                 path2 = tmp2.name
             with redirect_stdout(sio2):
-                state2 = baseline_V2.app.invoke({"image_path": path2}, {"recursion_limit": 2000})
+                state2 = baseline_V3.app.invoke({"image_path": path2}, {"recursion_limit": 2000})
             logs2 = sio2.getvalue().strip()
             fj2 = state2.get("final_output_json", "[]")
             fa2 = safe_load_allergen_list(fj2)
@@ -217,7 +217,7 @@ def analyze_image(img: Image.Image, do_mirror: bool, auto_mirror: bool):
 
             sio = io.StringIO()
             with redirect_stdout(sio):
-                state = baseline_V2.app.invoke({"image_path": tmp_path}, {"recursion_limit": 2000})
+                state = baseline_V3.app.invoke({"image_path": tmp_path}, {"recursion_limit": 2000})
             raw_logs = sio.getvalue().strip()
 
             final_json = state.get("final_output_json", "[]")

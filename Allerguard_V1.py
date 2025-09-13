@@ -16,6 +16,11 @@ from google.oauth2 import service_account  # 👈 직접 인증을 위한 라이
 
 # LangGraph 라이브러리
 from langgraph.graph import StateGraph, END
+from dotenv import load_dotenv # 👈 .env 파일을 위한 라이브러리 임포트
+
+# .env 파일에서 환경 변수를 로드합니다.
+load_dotenv()
+
 
 print("--- 🚀 알레르기 분석 서비스 (GCP Vision API + RAG + LLM Fallback) 시작 ---")
 print("사전 빌드된 임베딩 캐시 파일을 로드합니다...")
@@ -58,9 +63,7 @@ try:
 
     # 1c. GCP Vision API 클라이언트 초기화 (직접 경로 지정 방식)
     print("GCP Vision API 클라이언트 (직접 경로 지정) 초기화 중...")
-    
-    KEY_JSON_PATH = r"C:\Users\정주환\Desktop\keyfolder\nlp-study-467306-563e76afdbca.json"
-
+    KEY_JSON_PATH = os.getenv("GCP_KEY_JSON_PATH")
     try:
         credentials = service_account.Credentials.from_service_account_file(KEY_JSON_PATH)
         vision_client = vision.ImageAnnotatorClient(credentials=credentials)
@@ -293,8 +296,8 @@ def search_and_update_kb(state: AllergyGraphState) -> AllergyGraphState:
     RAG_KNOWLEDGE_BASE_CSV = "domestic_allergy_rag_knowledge_1000.csv"
     
     # ⬇️⬇️⬇️ [중요] 여기에 직접 발급받으신 API 키와 검색 엔진 ID를 입력하세요! ⬇️⬇️⬇️
-    API_KEY = ""
-    SEARCH_ENGINE_ID = ""
+    API_KEY = os.getenv("GOOGLE_API_KEY")
+    SEARCH_ENGINE_ID = os.getenv("GOOGLE_CSE_ID")
 
     print(f"'{ingredient}' 성분의 상위 카테고리 분류를 시작합니다.")
 
@@ -436,6 +439,20 @@ def check_remaining_ingredients(state: AllergyGraphState) -> str:
     else:
         print("  -> [항목 없음]. 'finalize_processing'로 이동.")
         return "all_ingredients_done"
+    
+def decide_after_parsing(state: AllergyGraphState) -> str:
+    """
+    ✅ (새로운 조건부 엣지) 파싱 직후, 처리할 성분이 있는지 확인합니다.
+    - 성분이 있으면: 'prepare_next_ingredient'로 이동하여 루프 시작
+    - 성분이 없으면: 'finalize_processing'으로 바로 이동하여 종료
+    """
+    print(f"--- (Edge: decide_after_parsing?) ---")
+    if state["ingredients_to_check"] and len(state["ingredients_to_check"]) > 0:
+        print(f"  -> [성분 목록 있음]. 처리를 시작합니다.")
+        return "process_ingredients"
+    else:
+        print("  -> [성분 목록 없음]. 처리를 종료합니다.")
+        return "skip_to_end"
 
 # --- 5. 그래프 빌드 및 컴파일 ---
 
@@ -464,7 +481,18 @@ workflow.set_entry_point("call_gcp_vision_api")
 
 # 3. 각 노드 간의 엣지(흐름)를 연결합니다.
 workflow.add_edge("call_gcp_vision_api", "parse_text_from_raw")
-workflow.add_edge("parse_text_from_raw", "prepare_next_ingredient")
+# 무조건 적인 엣지 삭제
+# workflow.add_edge("parse_text_from_raw", "prepare_next_ingredient")
+
+workflow.add_conditional_edges(
+    "parse_text_from_raw",
+    decide_after_parsing, # 방금 추가한 함수 사용
+    {
+        "process_ingredients": "prepare_next_ingredient", # 성분이 있으면 다음 성분 준비로
+        "skip_to_end": "finalize_processing"             # 성분이 없으면 바로 종료로
+    }
+)
+
 workflow.add_edge("prepare_next_ingredient", "rag_search")
 
 # 4. RAG 검색 결과에 따른 조건부 분기를 연결합니다.
@@ -501,17 +529,23 @@ print("--- ✅ LangGraph 워크플로우 컴파일 완료 ---")
 # --- 9. 테스트 실행 ---
 print("\n\n--- [Test Run: GCP API + Regex 파서 + NLI Fallback 기반 실행] ---")
 
+
+# from langchain_teddynote.graphs import visualize_graph
+
+# # 그래프 시각화
+# visualize_graph(app)
+
 # (테스트할 이미지 파일을 지정해야 합니다)
-my_test_image_file = "image.jpg" # 👈 'image.jpg'는 OCR 로그를 제공한 그 이미지 파일 가정
+# my_test_image_file = "image.jpg" # 👈 'image.jpg'는 OCR 로그를 제공한 그 이미지 파일 가정
 
-if my_test_image_file:
-    test_input = {"image_path": my_test_image_file}
-    print(f"테스트 실행 시작: {my_test_image_file}\n")
+# if my_test_image_file:
+#     test_input = {"image_path": my_test_image_file}
+#     print(f"테스트 실행 시작: {my_test_image_file}\n")
 
-    print("\n--- [Test Run: 최종 결과 (invoke)] ---")
-    final_state = app.invoke(test_input, {"recursion_limit": 100}) 
-    print("\n최종 반환 JSON:")
-    print(final_state['final_output_json'])
+#     print("\n--- [Test Run: 최종 결과 (invoke)] ---")
+#     final_state = app.invoke(test_input, {"recursion_limit": 100}) 
+#     print("\n최종 반환 JSON:")
+#     print(final_state['final_output_json'])
 
-else:
-    print("\n테스트 실행 건너뜀: 'my_test_image_file' 변수에 이미지 경로가 지정되지 않았습니다.")
+# else:
+#     print("\n테스트 실행 건너뜀: 'my_test_image_file' 변수에 이미지 경로가 지정되지 않았습니다.")
